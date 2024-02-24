@@ -1,0 +1,32 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "CodeCommit Repository stack"
+
+Parameters:
+  RepositoryName:
+    Description: "Repository Name"
+    Type: String
+    AllowedPattern : '[\w\.-]+'
+    Default: "my-repository"
+    MaxLength: 100
+
+  RepositoryDescription:
+    Description: "Repository Description"
+    Type: String
+    MaxLength: 1000
+
+Conditions:
+  ShouldUseDescription: !Not [!Equals [!Ref RepositoryDescription, ""]]
+
+Resources:
+
+  Repository:
+    Type: AWS::CodeCommit::Repository
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      RepositoryName: !Ref RepositoryName
+      RepositoryDescription: !If [ ShouldUseDescription, !Ref RepositoryDescription, !Ref AWS::NoValue]
+      Tags: 
+        - Key: "Name"
+          Value: !Ref RepositoryName
+          

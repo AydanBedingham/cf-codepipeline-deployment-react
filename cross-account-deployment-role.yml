@@ -1,0 +1,42 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CloudFormation template for deployment cross-account role
+
+Parameters:
+
+  ExternalAccountId:
+    Type: String
+    ConstraintDescription: Account number is a 12 digit number
+    Description: AWS Account ID of the external account that will assume the cross account role
+    AllowedPattern: '\d{12}'
+
+Resources:
+
+  DeploymentCrossAccountRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub crossaccount-deployment-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${ExternalAccountId}:root'
+            Action: sts:AssumeRole
+      Path: '/'
+      Policies:
+        - PolicyName: CrossAccountCodePipelinePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudformation:*
+                  - s3:*
+                  - apigateway:*
+                  - cloudfront:*
+                Resource: '*'
+
+Outputs:
+  CrossAccountRole:
+    Description: Arn for the cross account role assumed by the External account
+    Value: !GetAtt DeploymentCrossAccountRole.Arn

@@ -1,0 +1,358 @@
+AWSTemplateFormatVersion : '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: SAM template for CodeCommit repository
+
+Parameters:
+
+  CodeCommitRepositoryName:
+    Type: String
+    Description: Name of CodeCommit repository to be used with the pipeline eg. my-repository
+    MinLength: 1
+
+  BuildBranch:
+    Type: String
+    Description: Branch of repository used to trigger builds
+    MinLength: 1
+    Default: main
+
+  DevDeploymentCrossAccountRoleArn:
+    Type: String
+    Description: ARN for the cross account role that has been created in the prod account to fascilitate to deployment. eg. arn:aws:iam::123456789:role/crossaccount-deployment-role
+    MinLength: 1
+
+  ProdDeploymentCrossAccountRoleArn:
+    Type: String
+    Description: ARN for the cross account role that has been created in the prod account to fascilitate to deployment. eg. arn:aws:iam::123456789:role/crossaccount-deployment-role
+    MinLength: 1
+
+  DestinationStackName:
+    Type: String
+    Description: Name of stack assocaited with the ReactJS Application that will be deployed to other accounts eg. react-cors-spa
+    MinLength: 1
+
+  CloudFormationFile:
+    Type: String
+    Description: Path to CloudFormation file that defines the AWS resources for running ReactJS application
+    MinLength: 1
+    Default: react-cors-spa-stack.yaml
+
+  DeploymentRegion:
+    Type: String
+    Description: The region that resources will be deployed to
+    AllowedValues : [ "us-east-1", "ap-southeast-2" ]
+    Default: us-east-1
+
+Resources:
+
+  CodeBuildArtifactBuild:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub ${AWS::StackName}-build-artifacts
+      ServiceRole: !Ref CodeBuildArtifactBuildRole
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:5.0
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+
+          env:
+            shell: bash
+
+          phases:
+            install:
+              runtime-versions:
+                nodejs: 14
+                
+            build:
+              on-failure: ABORT
+              commands:
+                - # install dependencies
+                - yarn install --frozen-lockfile
+
+                - # Execute tests
+                - CI=true yarn test --passWithNoTests
+
+                - # generate deployment artifacts
+                - yarn build
+
+          artifacts:
+            files:
+              - 'build/**/*'
+              - '*.yaml'
+          cache:
+            paths:
+              - 'node_modules/**'
+      TimeoutInMinutes: 10
+
+
+  CodeBuildArtifactDeploy:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub ${AWS::StackName}-deploy-artifacts
+      ServiceRole: !Ref CodeBuildArtifactDeployRole
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:5.0
+        EnvironmentVariables:
+          - Name: CROSS_ACCOUNT_DEPLOYMENT_ROLE_ARN
+            Value: PLACEHOLDER_OVERRIDDEN_BY_PIPELINE
+          - Name: DESTINATION_ENVIRONMENT
+            Value: PLACEHOLDER_OVERRIDDEN_BY_PIPELINE
+          - Name: DESTINATION_STACK_NAME
+            Value: !Ref DestinationStackName
+          - Name: YAML_FILE
+            Value: !Ref CloudFormationFile
+          - Name: DESTINATION_REGION
+            Value: !Ref DeploymentRegion
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+
+          env:
+            shell: bash
+
+          phases:
+          
+            pre_build:
+              on-failure: ABORT
+              commands:
+                - # Assume temporary credentials using cross-account role
+                - creds_json=$(aws sts assume-role --role-arn $CROSS_ACCOUNT_DEPLOYMENT_ROLE_ARN --role-session-name codebuild)
+                - echo $creds_json
+                - export AWS_ACCESS_KEY_ID=$(echo $creds_json | jq -r '.Credentials.AccessKeyId')
+                - export AWS_SECRET_ACCESS_KEY=$(echo $creds_json | jq -r '.Credentials.SecretAccessKey')
+                - export AWS_SESSION_TOKEN=$(echo $creds_json | jq -r '.Credentials.SessionToken')
+
+                - # Print info about the current user for debugging purposes
+                - aws sts get-caller-identity
+
+            build:
+              on-failure: ABORT
+              commands:
+                - stack_name="${DESTINATION_ENVIRONMENT}-${DESTINATION_STACK_NAME}"
+
+                - # Deploy CloudFormation Template
+                - aws cloudformation deploy --template-file $YAML_FILE --stack-name $stack_name --capabilities CAPABILITY_NAMED_IAM --region $DESTINATION_REGION
+                
+                - # Extract Outputs from CloudFormation Template
+                - stack_outputs_json=$(aws cloudformation describe-stacks --stack-name $stack_name --region $DESTINATION_REGION | jq -r '.Stacks[0].Outputs')
+                - bucket_name=$(echo $stack_outputs_json | jq -r '.[] | select(.OutputKey=="BucketName") | .OutputValue')
+                - distribution_url=$(echo $stack_outputs_json | jq -r '.[] | select(.OutputKey=="CFDistributionURL") | .OutputValue')
+                - distribution_id=$(echo $stack_outputs_json | jq -r '.[] | select(.OutputKey=="CFDistributionId") | .OutputValue')
+                
+                - # Sync files to S3 Bucket associated with CloudFront distribution
+                - aws s3 sync "./build/" "s3://${bucket_name}/" --delete
+
+                - # Invalidate the cache of the CloudFront distrubtion (force it to return latest content)
+                - aws cloudfront create-invalidation --distribution-id $distribution_id --paths "/*"
+                
+      TimeoutInMinutes: 10
+
+  CodePipelineArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${AWS::StackName}-pipeline-bucket
+
+  CodePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub ${AWS::StackName}-pipeline
+      ArtifactStore:
+        Type: S3
+        Location: !Ref CodePipelineArtifactBucket
+      RoleArn: !GetAtt CodePipelineRole.Arn
+      RestartExecutionOnUpdate: false
+      Stages:
+
+        # Retrieve source from CodeCommit
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: 1
+                Provider: CodeCommit
+              OutputArtifacts:
+                - Name: SourceOutput
+              Configuration:
+                RepositoryName: !Ref CodeCommitRepositoryName
+                BranchName: !Ref BuildBranch
+              RunOrder: 10
+
+        # Build application and push snapshot to artifactory
+        - Name: Build
+          Actions:
+            - Name: Build-React-App
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: BuildOutput
+              Configuration:
+                ProjectName: !Ref CodeBuildArtifactBuild
+              RunOrder: 20
+
+        # Deploy application to dev
+        - Name: Dev-Deploy
+          Actions:
+            - Name: BuildAction
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              InputArtifacts:
+                - Name: BuildOutput
+              Configuration:
+                ProjectName: !Ref CodeBuildArtifactDeploy
+                EnvironmentVariables: !Sub |
+                  [
+                  {"name":"CROSS_ACCOUNT_DEPLOYMENT_ROLE_ARN","value":"${DevDeploymentCrossAccountRoleArn}","type":"PLAINTEXT"},
+                  {"name":"DESTINATION_ENVIRONMENT","value":"dev","type":"PLAINTEXT"}
+                  ]
+              RunOrder: 30
+
+        # Manual approval step
+        - Name: Approve-Prod-Deploy
+          Actions:
+            - Name: ApprovalReleaseAction
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Version: 1
+                Provider: Manual
+              RunOrder: 40
+
+        # Deploy application to prod
+        - Name: Prod-Deploy
+          Actions:
+            - Name: BuildAction
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              InputArtifacts:
+                - Name: BuildOutput
+              Configuration:
+                ProjectName: !Ref CodeBuildArtifactDeploy
+                EnvironmentVariables: !Sub |
+                  [
+                  {"name":"CROSS_ACCOUNT_DEPLOYMENT_ROLE_ARN","value":"${ProdDeploymentCrossAccountRoleArn}","type":"PLAINTEXT"},
+                  {"name":"DESTINATION_ENVIRONMENT","value":"prod","type":"PLAINTEXT"}
+                  ]
+              RunOrder: 50
+
+  CodeBuildArtifactBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          Effect: Allow
+          Principal:
+            Service: codebuild.amazonaws.com
+          Action:
+            - sts:AssumeRole
+      Policies:
+        - PolicyName: BuildArtifacts
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:*:*:log-group:/aws/codebuild/${AWS::StackName}-build-artifacts:log-stream:*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                Resource: !Sub 'arn:aws:s3:::${CodePipelineArtifactBucket}/*'
+
+  CodeBuildArtifactDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          Effect: Allow
+          Principal:
+            Service: codebuild.amazonaws.com
+          Action:
+            - sts:AssumeRole
+      Policies:
+        - PolicyName: DeployArtifacts
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sts:AssumeRole
+                Resource:
+                  - !Ref DevDeploymentCrossAccountRoleArn
+                  - !Ref ProdDeploymentCrossAccountRoleArn
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:*:*:log-group:/aws/codebuild/${AWS::StackName}-deploy-artifacts:log-stream:*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource: !Sub 'arn:aws:s3:::${CodePipelineArtifactBucket}/*'
+
+  CodePipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          Effect: Allow
+          Principal:
+            Service: codepipeline.amazonaws.com
+          Action:
+            - sts:AssumeRole
+      Policies:
+        - PolicyName: CodePipeline
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                Resource: !Sub 'arn:aws:s3:::${CodePipelineArtifactBucket}/*'
+              - Effect: Allow
+                Action:
+                  - codecommit:GetBranch
+                  - codecommit:GetCommit
+                  - codecommit:UploadArchive
+                  - codecommit:GetUploadArchiveStatus
+                Resource: !Sub "arn:aws:codecommit:*:*:${CodeCommitRepositoryName}"
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                Resource:
+                  - !GetAtt CodeBuildArtifactBuild.Arn
+                  - !GetAtt CodeBuildArtifactDeploy.Arn
