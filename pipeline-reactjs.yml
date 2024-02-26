@@ -1,6 +1,5 @@
-AWSTemplateFormatVersion : '2010-09-09'
-Transform: AWS::Serverless-2016-10-31
-Description: SAM template for CodeCommit repository
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CloudFormation template for ReactJS application deployment pipeline
 
 Parameters:
 
@@ -27,12 +26,12 @@ Parameters:
 
   DestinationStackName:
     Type: String
-    Description: Name of stack assocaited with the ReactJS Application that will be deployed to other accounts eg. react-cors-spa
+    Description: Name of stack assocaited with the Application that will be deployed to other accounts eg. react-cors-spa
     MinLength: 1
 
   CloudFormationFile:
     Type: String
-    Description: Path to CloudFormation file that defines the AWS resources for running ReactJS application
+    Description: Path to CloudFormation file that defines the AWS resources for running the application
     MinLength: 1
     Default: react-cors-spa-stack.yaml
 
@@ -173,10 +172,10 @@ Resources:
       RestartExecutionOnUpdate: false
       Stages:
 
-        # Retrieve source from CodeCommit
         - Name: Source
           Actions:
-            - Name: SourceAction
+            # Retrieve source from CodeCommit
+            - Name: Retrieve-Source
               ActionTypeId:
                 Category: Source
                 Owner: AWS
@@ -189,10 +188,10 @@ Resources:
                 BranchName: !Ref BuildBranch
               RunOrder: 10
 
-        # Build application and push snapshot to artifactory
         - Name: Build
           Actions:
-            - Name: Build-React-App
+            # Build application and output artifacts
+            - Name: Build-App
               ActionTypeId:
                 Category: Build
                 Owner: AWS
@@ -206,10 +205,10 @@ Resources:
                 ProjectName: !Ref CodeBuildArtifactBuild
               RunOrder: 20
 
-        # Deploy application to dev
-        - Name: Dev-Deploy
+        - Name: Deploy-Dev
           Actions:
-            - Name: BuildAction
+            # Deploy application to dev
+            - Name: Deploy-To-Dev
               ActionTypeId:
                 Category: Build
                 Owner: AWS
@@ -226,21 +225,19 @@ Resources:
                   ]
               RunOrder: 30
 
-        # Manual approval step
-        - Name: Approve-Prod-Deploy
+        
+        - Name: Deploy-Prod
           Actions:
-            - Name: ApprovalReleaseAction
+            # Manual step for approving deployments to prod
+            - Name: Approve-Prod-Deploy
               ActionTypeId:
                 Category: Approval
                 Owner: AWS
                 Version: 1
                 Provider: Manual
               RunOrder: 40
-
-        # Deploy application to prod
-        - Name: Prod-Deploy
-          Actions:
-            - Name: BuildAction
+            # Deploy application to prod
+            - Name: Deploy-To-Prod
               ActionTypeId:
                 Category: Build
                 Owner: AWS
