@@ -21,7 +21,6 @@ Resources:
           - Effect: Allow
             Principal:
               AWS: !Sub 'arn:aws:iam::${ExternalAccountId}:root'
-              Service: codebuild.amazonaws.com
             Action: sts:AssumeRole
       Path: '/'
       Policies:
