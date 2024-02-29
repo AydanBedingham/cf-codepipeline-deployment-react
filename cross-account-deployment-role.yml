@@ -14,7 +14,7 @@ Resources:
   DeploymentCrossAccountRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub crossaccount-deployment-role
+      RoleName: crossaccount-deployment-role
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:

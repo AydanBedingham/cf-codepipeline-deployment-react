@@ -3,7 +3,7 @@
 CloudFormation template that defines a CodePipeline and associated CodeBuild projects to fascilitate deployment of a ReactJS frontend web application from a shared-services account to development and production accounts.
 The ReactJS application is deployed to serverless infrastructure backed by CloudFront distribution and S3 Bucket (CloudFront configured to use S3 Origin).
 
-The pipeline was built and tested with the [cf-react-cors-spa](https://github.com/AydanBedingham/cf-react-cors-spa) project and will work out-of-the-box with other ReactJS projects that follow a similar project structure and package manager.
+The pipeline was built and tested with the [cf-react-cors-spa](https://github.com/AydanBedingham/cf-react-cors-spa) project and can be adapted to work with other ReactJS projects that follow a similar project structure and package manager.
 
 ## Architecture
 1. Developer commit code to the 'monitored branch' (default: main) of the CodeRepository.
@@ -27,4 +27,29 @@ The pipeline was built and tested with the [cf-react-cors-spa](https://github.co
 
 `pipeline-reactjs.yml` : CloudFormation template that creates a CodePipeline and associated ClouBuild resources for building and deploying the ReactJS Application. This template is intended to be deployed to the shared services account.
 
-`repository.yml` : (Optional) Helper template used to create a CodeCommit repository to store the ReactJS application for use with the `pipeline-reactjs.yml` template. This template is intended to be deployed to the shared services account.
+`repository.yml` : Helper template used to create a CodeCommit repository to store the ReactJS application for use with the `pipeline-reactjs.yml` template. This template is intended to be deployed to the shared services account.
+
+## Example Deployment
+
+1. Deploy the `cross-account-deployment-role.yml` template into your development and production accounts to create the cross-account roles that will be assumed by the pipeline.
+```
+ExternalAccountId: <YOUR SHARED SERVICES ACCOUNT ID>
+```
+
+2. Deploy the `repository.yml` template into your Shared Services account to create a new repository.
+```
+RepositoryName: my-repository
+```
+
+3. Populate the repository's `main` branch with contents of the [cf-react-cors-spa](https://github.com/AydanBedingham/cf-react-cors-spa) project.
+
+3. Deploy the `pipeline-reactjs.yml` template into your shared services account
+```
+CodeCommitRepositoryName: my-repository
+BuildBranch: main
+DevDeploymentCrossAccountRoleArn: arn:aws:iam::<YOUR DEV ACCOUNT ID>:role/crossaccount-deployment-role
+ProdDeploymentCrossAccountRoleArn: arn:aws:iam::<YOUR PROD ACCOUNT ID>:role/crossaccount-deployment-role
+DestinationStackName: react-cors-spa
+CloudFormationFile: react-cors-spa-stack.yaml
+DeploymentRegion: us-east-1
+```
