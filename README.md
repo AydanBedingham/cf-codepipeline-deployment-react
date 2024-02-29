@@ -3,7 +3,7 @@
 CloudFormation template that defines a CodePipeline and associated CodeBuild projects to fascilitate deployment of a ReactJS frontend web application from a shared-services account to development and production accounts.
 The ReactJS application is deployed to serverless infrastructure backed by CloudFront distribution and S3 Bucket (CloudFront configured to use S3 Origin).
 
-The pipeline was built and tested with the [cf-react-cors-spa](https://github.com/AydanBedingham/cf-react-cors-spa) project andwill work out-of-the-box with other ReactJS projects that follow a similar project structure and package manager.
+The pipeline was built and tested with the [cf-react-cors-spa](https://github.com/AydanBedingham/cf-react-cors-spa) project and will work out-of-the-box with other ReactJS projects that follow a similar project structure and package manager.
 
 ## Architecture
 1. Developer commit code to the 'monitored branch' (default: main) of the CodeRepository.
